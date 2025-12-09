@@ -1,0 +1,51 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit(./**)",
+
+      "Bash(ls:*)",
+      "Bash(tree:*)",
+      "Bash(grep:*)",
+
+      "Bash(touch:*)",
+      "Bash(rm:*)",
+      "Bash(mkdir:*)",
+      "Bash(rmdir:*)",
+      "Bash(mv:*)",
+
+      "Bash(npm install:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm run dev:*)",
+      "Bash(npm start)",
+
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git diff:*)",
+      "Bash(git grep:*)",
+      "Bash(git add:*)",
+      "Bash(git mv:*)",
+      "Bash(git rm:*)",
+      "Bash(git commit:*)",
+      "Bash(git tag:*)",
+      "Bash(git blame:*)"
+    ],
+    "deny": [],
+    "ask": [
+      "Edit(.*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/validate-bash/run.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
