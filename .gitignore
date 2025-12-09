@@ -1,0 +1,10 @@
+# Most of the folders in this directory are caches and metadata for Claude and should not be controlled by the user
+*
+
+# Whitelist user-controlled files
+!settings.json
+!hooks/
+!hooks/**
+
+# Other ignores
+*.swp
