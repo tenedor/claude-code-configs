@@ -102,5 +102,11 @@ if [[ "$command" =~ $'\x00' ]] || [[ "$command" =~ $'\x1b' ]]; then
   require_user_permission "contains suspicious control characters"
 fi
 
+# 7. Block commands that interact with .git or .gitignore files
+# This prevents accidental or malicious modification of git metadata
+if [[ "$command" =~ \.git ]]; then
+  require_user_permission "attempts to interact with .git or .gitignore files. Git metadata requires explicit approval."
+fi
+
 # If all checks pass, allow the command
 defer_permission_decision

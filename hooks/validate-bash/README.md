@@ -57,6 +57,16 @@ rm -rf /
 ### 6. **Control Characters**
 Blocks null bytes and escape sequences that could hide malicious behavior.
 
+### 7. **Git Metadata Access** (`.git`, `.gitignore`)
+Prevents tampering with git repository metadata and configuration files.
+
+**Examples blocked:**
+- `rm -rf .git`
+- `rm .gitignore`
+- `echo 'secret' >> .gitignore`
+- `chmod 777 .git/config`
+- `cat .git/config`
+
 ## What It Allows
 
 Safe, simple commands that operate within the project directory:
