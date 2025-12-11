@@ -46,6 +46,17 @@
           }
         ]
       }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/notification-permission-prompt/run.sh"
+          }
+        ]
+      }
     ]
   }
 }
