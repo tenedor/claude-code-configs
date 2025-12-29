@@ -1,0 +1,44 @@
+{
+  "patterns": [
+    "sleep:*",
+
+    "ls:*",
+    "tree:*",
+    "grep:*",
+    "find:*",
+    "pwd:*",
+    "cat:*",
+    "less:*",
+    "head:*",
+    "tail:*",
+    "wc:*",
+    "diff:*",
+    "tee:*",
+
+    "touch:*",
+    "echo:*",
+    "printf:*",
+    "mkdir:*",
+    "cp:*",
+    "rm:*",
+    "rmdir:*",
+    "mv:*",
+
+    "npm install:*",
+    "npm run build:*",
+    "npm run dev:*",
+    "npm start",
+
+    "git status:*",
+    "git log:*",
+    "git show:*",
+    "git diff:*",
+    "git grep:*",
+    "git add:*",
+    "git mv:*",
+    "git rm:*",
+    "git commit:*",
+    "git tag:*",
+    "git blame:*"
+  ]
+}
