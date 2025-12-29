@@ -71,26 +71,84 @@ def defer_permission_decision(command):
     # Exit with code 0 and no output = defer
 
 
-def validate_text_for_dangerous_patterns(text, context_name):
+def looks_like_risky_path(word):
+    return (
+        # absolute path
+        word.startswith('/') or
+        # home path
+        word == '~' or
+        word.startswith('~/') or
+        # path with parent directory reference
+        word == '..' or
+        ('..' in word and '/' in word)
+    )
+
+
+def path_escapes_directory(path, base_dir):
+    """
+    Check if a path escapes the base directory.
+
+    Args:
+        path: Path to check (can be relative, absolute, contain .., or ~)
+        base_dir: Base directory to check against (should be absolute)
+
+    Returns:
+        True if path escapes base_dir, False if it stays within
+    """
+    try:
+        # Expand ~ to home directory
+        expanded_path = os.path.expanduser(path)
+
+        # If path is relative, resolve it relative to base_dir
+        # If path is absolute, this just normalizes it
+        if os.path.isabs(expanded_path):
+            resolved_path = os.path.normpath(expanded_path)
+        else:
+            resolved_path = os.path.normpath(os.path.join(base_dir, expanded_path))
+
+        # Normalize base_dir
+        normalized_base = os.path.normpath(base_dir)
+
+        # Check if resolved path is within base directory
+        # Must either equal base_dir or be a subdirectory
+        if resolved_path == normalized_base:
+            return False
+
+        # Check if it's a subdirectory (resolved path starts with base + separator)
+        if resolved_path.startswith(normalized_base + os.sep):
+            return False
+
+        # Path escapes the base directory
+        return True
+
+    except (ValueError, OSError):
+        # If we can't resolve the path, assume it's dangerous
+        return True
+
+
+def validate_text_for_dangerous_patterns(text, context_name, base_dir):
     """
     Check a text string (filename, argument, etc.) for dangerous patterns.
     Returns (is_safe, violation_message).
+
+    Args:
+        text: Text to validate
+        context_name: Description of what this text represents (for error messages)
+        base_dir: Base directory for path validation
     """
-    # Check for absolute paths
-    if re.search(r'(^|\s)/', text):
-        return False, f"{context_name} uses absolute path"
-
-    # Check for parent directory access
-    if '..' in text:
-        return False, f"{context_name} accesses parent directory"
-
-    # Check for tilde expansion
-    if '~' in text:
-        return False, f"{context_name} uses tilde expansion"
-
-    # Check for .git access
+    # Check for .git access first (always dangerous, regardless of path resolution)
     if '.git' in text:
         return False, f"{context_name} accesses .git files"
+
+    # Semantic path validation
+    # Extract potential paths from the text
+    # For now, we'll treat the whole text as a potential path
+    # This works for redirect targets and simple arguments
+    words = text.split()
+    for word in words:
+        # Treat any word that looks like a risky path as a path
+        if looks_like_risky_path(word) and path_escapes_directory(word, base_dir):
+            return False, f"{context_name} accesses path outside project directory: '{word}'"
 
     return True, None
 
@@ -168,7 +226,7 @@ class BashASTVisitor:
     This replaces multiple separate recursive traversals with a single unified visitor.
     """
 
-    def __init__(self):
+    def __init__(self, base_dir):
         # Collected command information
         self.commands = []  # List of CommandContext objects
 
@@ -183,6 +241,9 @@ class BashASTVisitor:
         # Context tracking for semantic awareness
         self.in_command_substitution = False
         self.in_redirect = False
+
+        # Base directory for path validation
+        self.base_dir = base_dir
 
     def visit(self, node):
         """
@@ -247,7 +308,7 @@ class BashASTVisitor:
             if hasattr(node.output, 'word'):
                 target = node.output.word
                 is_safe, violation = validate_text_for_dangerous_patterns(
-                    target, "redirect target"
+                    target, "redirect target", self.base_dir
                 )
                 if not is_safe:
                     self.violations.append(violation)
@@ -347,7 +408,7 @@ class BashASTVisitor:
         self.generic_visit(node)
 
 
-def check_command(command):
+def check_command(command, base_dir):
     """
     Check if a compound command (with pipes, &&, etc.) is approved.
     Returns (decision, reason).
@@ -358,6 +419,10 @@ def check_command(command):
     - "deny": command is invalid and should be rejected with instructions
 
     Uses BashASTVisitor to perform semantic analysis in a single pass.
+
+    Args:
+        command: The bash command string to validate
+        base_dir: Base directory for path validation (typically cwd)
     """
     if not BASHLEX_AVAILABLE:
         return "ask", "bashlex not available - cannot parse compound commands"
@@ -379,7 +444,7 @@ def check_command(command):
         parts = bashlex.parse(command)
 
         # Create visitor and traverse the AST
-        visitor = BashASTVisitor()
+        visitor = BashASTVisitor(base_dir=base_dir)
         for part in parts:
             visitor.visit(part)
 
@@ -398,7 +463,8 @@ def check_command(command):
             # Validate command arguments for dangerous patterns
             is_safe, violation = validate_text_for_dangerous_patterns(
                 cmd_ctx.full_command,
-                f"'{cmd_ctx.name}'"
+                f"'{cmd_ctx.name}'",
+                base_dir
             )
             if not is_safe:
                 visitor.violations.append(violation)
@@ -454,10 +520,14 @@ def check_command(command):
         return "ask", f"failed to parse compound command: {error_msg}"
 
 
-def validate_command(command):
+def validate_command(command, base_dir):
     """
     Validate a bash command.
     Returns: None to defer, or calls send_permission_response() and returns True.
+
+    Args:
+        command: The bash command string to validate
+        base_dir: Base directory for path validation (typically cwd)
     """
     # Block null bytes (no legitimate use, could confuse parser)
     if '\x00' in command:
@@ -469,7 +539,7 @@ def validate_command(command):
         log_debug(f"WARNING: Command contains escape sequences (potential log obfuscation): {command}")
 
     # Semantic command validation
-    decision, reason = check_command(command)
+    decision, reason = check_command(command, base_dir)
     send_permission_response(decision, reason, command)
     return True
 
@@ -484,17 +554,20 @@ def main():
         log_debug(f"ERROR reading input: {e}")
         sys.exit(1)
 
-    # Extract tool name and command
+    # Extract tool name, command, and working directory
     tool_name = input_data.get('tool_name', '')
     command = input_data.get('tool_input', {}).get('command', '')
+    # Default to /dev/null if cwd not provided (e.g., legacy tests)
+    # This ensures all paths will be rejected as escaping the "project"
+    cwd = input_data.get('cwd', '/dev/null')
 
     # Only validate Bash commands
     if tool_name != "Bash":
         defer_permission_decision(command)
         sys.exit(0)
 
-    # Validate the command
-    result = validate_command(command)
+    # Validate the command (pass cwd as base_dir for path validation)
+    result = validate_command(command, base_dir=cwd)
 
     # If result is None, defer (exit 0 with no output)
     if result is None:

@@ -465,6 +465,67 @@ def test_command(cmd, expected):
         fail_count += 1
 
 
+def test_command_with_cwd(cmd, cwd, expected, description):
+    """
+    Test a command with a specific cwd and check if the permission decision matches expected.
+
+    Args:
+        cmd: The bash command to test
+        cwd: Current working directory for the command
+        expected: Expected permission decision ('allow', 'ask', or 'deny')
+        description: Human-readable description of the test
+    """
+    global pass_count, fail_count
+
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    hook_script = os.path.join(script_dir, 'run.sh')
+
+    # Create test input JSON
+    test_input = {
+        'tool_name': 'Bash',
+        'tool_input': {'command': cmd},
+        'cwd': cwd
+    }
+
+    # Run the hook
+    result = subprocess.run(
+        [hook_script],
+        input=json.dumps(test_input),
+        capture_output=True,
+        text=True
+    )
+
+    # Parse result
+    if result.returncode == 0:
+        if result.stdout:
+            try:
+                output = json.loads(result.stdout)
+                decision = output.get('hookSpecificOutput', {}).get('permissionDecision', 'allow')
+                reason = output.get('hookSpecificOutput', {}).get('permissionDecisionReason', '')
+            except json.JSONDecodeError:
+                decision = 'error'
+                reason = 'Invalid JSON output'
+        else:
+            decision = 'allow'
+            reason = ''
+    else:
+        decision = 'error'
+        reason = f'Exit code {result.returncode}'
+
+    # Check result
+    if decision == expected:
+        print(f"{Colors.GREEN}✓ PASS{Colors.NC}: {description}")
+        if reason and expected == 'ask':  # Only show reason for blocked commands
+            print(f"  {Colors.GRAY}Reason{Colors.NC}: {reason}")
+        pass_count += 1
+    else:
+        print(f"{Colors.RED}✗ FAIL{Colors.NC}: Expected '{expected}' but got '{decision}': {description}")
+        if reason:
+            print(f"  {Colors.GRAY}Reason{Colors.NC}: {reason}")
+        fail_count += 1
+
+
 def main():
     """Run all tests using combinatorial test generation."""
     global pass_count, fail_count
@@ -748,7 +809,7 @@ def main():
     )
     test_command(cmd, "allow" if allowed else "ask")
 
-    print_subheader("Multiline Commands (should ask)")
+    print_subheader("Multiline Commands (should judge nested commands)")
     # Test with approved commands
     cmd, allowed = multiline_combinator(
         (safe_atoms[0], True),
@@ -761,6 +822,95 @@ def main():
         (unapproved_commands[1], False)
     )
     test_command(cmd, "allow" if allowed else "ask")
+
+    # ===== Path-Based Tests =====
+    print_header("PART 3: Path-Based Validation Tests (with cwd provided)")
+
+    # Setup test directory structure
+    import tempfile
+    import shutil
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    testdata_dir = os.path.join(script_dir, 'tmp-testdata')
+
+    # Clean up any existing test data
+    if os.path.exists(testdata_dir):
+        shutil.rmtree(testdata_dir)
+
+    # Create test directory structure
+    os.makedirs(testdata_dir, exist_ok=True)
+    project_dir = os.path.join(testdata_dir, 'project')
+    os.makedirs(project_dir, exist_ok=True)
+    subdir = os.path.join(project_dir, 'subdir')
+    os.makedirs(subdir, exist_ok=True)
+
+    # Create some test files
+    open(os.path.join(project_dir, 'file.txt'), 'w').close()
+    open(os.path.join(subdir, 'nested.txt'), 'w').close()
+    open(os.path.join(testdata_dir, 'outside.txt'), 'w').close()
+
+    print_subheader("Absolute paths")
+
+    # Standalone slash (root directory) - should ask
+    test_command_with_cwd('ls /', project_dir, 'ask', "Standalone slash (root) blocked: ls /")
+
+    # Absolute path inside project - should allow
+    abs_inside = os.path.join(project_dir, 'file.txt')
+    test_command_with_cwd(f'cat {abs_inside}', project_dir, 'allow', f"Absolute path inside project allowed: cat {abs_inside}")
+
+    # Absolute path outside project - should ask
+    abs_outside = os.path.join(testdata_dir, 'outside.txt')
+    test_command_with_cwd(f'cat {abs_outside}', project_dir, 'ask', f"Absolute path outside project blocked: cat {abs_outside}")
+
+    print_subheader("Parent directory references")
+
+    # Parent dir from subdir - blocks because it escapes the cwd boundary
+    test_command_with_cwd('cat ../file.txt', subdir, 'ask', "Parent dir from subdir blocked: cat ../file.txt (escapes cwd)")
+
+    # Parent dir that escapes project - should ask
+    test_command_with_cwd('cat ../outside.txt', project_dir, 'ask', "Parent dir escaping project blocked: cat ../outside.txt (from project)")
+
+    # Parent dir in middle of path, stays inside cwd - should allow
+    test_command_with_cwd('cat subdir/../file.txt', project_dir, 'allow', "Parent dir in middle of path, stays in cwd: cat subdir/../file.txt")
+
+    # Parent dir in middle of path, escapes cwd - should ask
+    test_command_with_cwd('cat subdir/../../outside.txt', project_dir, 'ask', "Parent dir in middle escapes cwd: cat subdir/../../outside.txt")
+
+    print_subheader("Relative paths")
+
+    # Simple relative path in project - should allow
+    test_command_with_cwd('cat file.txt', project_dir, 'allow', "Relative path in project allowed: cat file.txt")
+
+    # Subdirectory relative path - should allow
+    test_command_with_cwd('cat subdir/nested.txt', project_dir, 'allow', "Subdirectory relative path allowed: cat subdir/nested.txt")
+
+    print_subheader("Tilde expansion")
+
+    # Tilde to home directory - should ask
+    test_command_with_cwd('cat ~/.bashrc', project_dir, 'ask', "Tilde expansion blocked: cat ~/.bashrc")
+
+    # Standalone tilde - should ask
+    test_command_with_cwd('cat ~', project_dir, 'ask', "Standalone tilde blocked: cat ~")
+
+    # Check if cwd is inside home directory
+    home_dir = os.path.expanduser('~')
+    if project_dir.startswith(home_dir + os.sep):
+        # Calculate relative path from home to a file in project
+        rel_from_home = os.path.relpath(os.path.join(project_dir, 'file.txt'), home_dir)
+        tilde_path = os.path.join('~', rel_from_home)
+        test_command_with_cwd(f'cat {tilde_path}', project_dir, 'allow', f"Tilde path inside project allowed: cat {tilde_path}")
+
+    print_subheader("Edge cases")
+
+    # Word with .. but no slash (not a path) - should allow
+    test_command_with_cwd('echo foo..bar', project_dir, 'allow', "Non-path with .. allowed: echo foo..bar")
+
+    # Redirects with paths
+    redirect_file = os.path.join(project_dir, 'output.txt')
+    test_command_with_cwd(f'echo test > {redirect_file}', project_dir, 'allow', "Redirect to absolute path in project allowed")
+
+    # Clean up test data
+    shutil.rmtree(testdata_dir)
 
     # ===== Summary =====
     print_header("Testing complete!")
