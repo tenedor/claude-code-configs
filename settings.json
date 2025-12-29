@@ -1,14 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "Edit(./**)",
+      "Edit(/**)",
+      "Write(/**)",
       "WebFetch(domain:stackoverflow.com)",
       "WebSearch"
     ],
     "deny": [],
     "ask": [
-      "Edit(.*)"
+      "Edit(/**/.*)",
+      "Write(/**/.*)"
     ],
+    "additionalDirectories": ["/tmp"],
     "defaultMode": "default"
   },
   "hooks": {
