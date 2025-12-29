@@ -362,6 +362,18 @@ def check_command(command):
     if not BASHLEX_AVAILABLE:
         return "ask", "bashlex not available - cannot parse compound commands"
 
+    # TODO: Implement a user-configurable, flexible flag permissions model.
+
+    # Dangerous flags that enable arbitrary code execution
+    # These require user permission regardless of which command uses them
+    DANGEROUS_EXEC_FLAGS = {
+        '--command',
+        '-exec',
+        '--exec',
+        '--execute',
+        '--eval'
+    }
+
     try:
         # Parse the bash command into AST
         parts = bashlex.parse(command)
@@ -391,6 +403,17 @@ def check_command(command):
             if not is_safe:
                 visitor.violations.append(violation)
                 continue
+
+            # Check for dangerous code execution flags
+            # Note: This is a simple substring check and may have false positives
+            # (e.g., `echo --exec` will trigger this check)
+            # False positives are acceptable since we're asking for permission, not blocking
+            for arg in cmd_ctx.parts[1:]:  # Skip command name, check arguments only
+                if arg in DANGEROUS_EXEC_FLAGS:
+                    visitor.violations.append(
+                        f"'{cmd_ctx.name}' uses dangerous flag '{arg}' (enables arbitrary code execution)"
+                    )
+                    break
 
             # Check if this command matches approved patterns
             is_approved = False

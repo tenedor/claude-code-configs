@@ -613,6 +613,24 @@ def main():
     cmd, allowed = variable_expansion_combinator('HOME', style='${')
     test_command(cmd, "allow" if allowed else "ask")
 
+    print_subheader("Dangerous flags (code execution)")
+    # Dangerous flags should ask
+    test_command("find . -name '*.txt' -exec rm {} \\;", "ask")
+    test_command("find . -exec cat {} \\;", "ask")
+    test_command("npm install --eval 'malicious()'", "ask")
+    test_command("echo test --command something", "ask")
+
+    # Safe usage: dangerous flag strings inside quoted arguments
+    test_command("echo 'use --exec flag'", "allow")
+    test_command("echo \"--eval is mentioned here\"", "allow")
+    test_command("git commit -m 'Added --command flag'", "allow")
+
+    # False positive cases: flag-like argument in non-flag position
+    # These will ask for permission even though they're arguably safe
+    # This is acceptable since we're being conservative
+    test_command("git commit -m --exec", "ask")
+    test_command("echo --eval", "ask")
+
     # ===== Compound Command Tests =====
     print_header("PART 2: Compound Command Tests")
 
