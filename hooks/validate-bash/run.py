@@ -18,23 +18,25 @@ except ImportError:
 
 
 def load_approved_patterns():
-    """Load approved command patterns from JSON file."""
+    """Load approved command patterns and paths from JSON file."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     patterns_file = os.path.join(script_dir, 'approved-patterns.json')
 
     try:
         with open(patterns_file, 'r') as f:
             data = json.load(f)
-            return data.get('patterns', [])
+            commands = data.get('commands', [])
+            paths = data.get('paths', [])
+            return commands, paths
     except Exception as e:
-        # If we can't load the patterns file, return empty list
+        # If we can't load the patterns file, return empty lists
         # Note: Can't use log_debug here as it's not defined yet
         print(f"ERROR loading approved patterns: {e}", file=sys.stderr)
-        return []
+        return [], []
 
 
-# Load approved patterns from JSON file
-APPROVED_PATTERNS = load_approved_patterns()
+# Load approved patterns and paths from JSON file
+APPROVED_PATTERNS, APPROVED_PATHS = load_approved_patterns()
 
 
 def log_debug(message):
@@ -84,17 +86,21 @@ def looks_like_risky_path(word):
     )
 
 
-def path_escapes_directory(path, base_dir):
+def path_escapes_directory(path, base_dir, approved_paths=None):
     """
-    Check if a path escapes the base directory.
+    Check if a path escapes the base directory and approved paths.
 
     Args:
         path: Path to check (can be relative, absolute, contain .., or ~)
         base_dir: Base directory to check against (should be absolute)
+        approved_paths: Optional list of additional approved path prefixes
 
     Returns:
-        True if path escapes base_dir, False if it stays within
+        True if path escapes base_dir and all approved paths, False if it stays within any
     """
+    if approved_paths is None:
+        approved_paths = []
+
     try:
         # Expand ~ to home directory
         expanded_path = os.path.expanduser(path)
@@ -118,7 +124,18 @@ def path_escapes_directory(path, base_dir):
         if resolved_path.startswith(normalized_base + os.sep):
             return False
 
-        # Path escapes the base directory
+        # Check against approved paths
+        for approved_path in approved_paths:
+            normalized_approved = os.path.normpath(approved_path)
+
+            # Check if path equals or is within the approved path
+            if resolved_path == normalized_approved:
+                return False
+
+            if resolved_path.startswith(normalized_approved + os.sep):
+                return False
+
+        # Path escapes the base directory and all approved paths
         return True
 
     except (ValueError, OSError):
@@ -126,7 +143,7 @@ def path_escapes_directory(path, base_dir):
         return True
 
 
-def validate_text_for_dangerous_patterns(text, context_name, base_dir):
+def validate_text_for_dangerous_patterns(text, context_name, base_dir, approved_paths=None):
     """
     Check a text string (filename, argument, etc.) for dangerous patterns.
     Returns (is_safe, violation_message).
@@ -135,7 +152,11 @@ def validate_text_for_dangerous_patterns(text, context_name, base_dir):
         text: Text to validate
         context_name: Description of what this text represents (for error messages)
         base_dir: Base directory for path validation
+        approved_paths: Optional list of additional approved path prefixes
     """
+    if approved_paths is None:
+        approved_paths = []
+
     # Check for .git access first (always dangerous, regardless of path resolution)
     if '.git' in text:
         return False, f"{context_name} accesses .git files"
@@ -147,7 +168,7 @@ def validate_text_for_dangerous_patterns(text, context_name, base_dir):
     words = text.split()
     for word in words:
         # Treat any word that looks like a risky path as a path
-        if looks_like_risky_path(word) and path_escapes_directory(word, base_dir):
+        if looks_like_risky_path(word) and path_escapes_directory(word, base_dir, approved_paths):
             return False, f"{context_name} accesses path outside project directory: '{word}'"
 
     return True, None
@@ -226,7 +247,7 @@ class BashASTVisitor:
     This replaces multiple separate recursive traversals with a single unified visitor.
     """
 
-    def __init__(self, base_dir):
+    def __init__(self, base_dir, approved_paths=None):
         # Collected command information
         self.commands = []  # List of CommandContext objects
 
@@ -244,6 +265,7 @@ class BashASTVisitor:
 
         # Base directory for path validation
         self.base_dir = base_dir
+        self.approved_paths = approved_paths if approved_paths is not None else []
 
     def visit(self, node):
         """
@@ -308,7 +330,7 @@ class BashASTVisitor:
             if hasattr(node.output, 'word'):
                 target = node.output.word
                 is_safe, violation = validate_text_for_dangerous_patterns(
-                    target, "redirect target", self.base_dir
+                    target, "redirect target", self.base_dir, self.approved_paths
                 )
                 if not is_safe:
                     self.violations.append(violation)
@@ -408,7 +430,7 @@ class BashASTVisitor:
         self.generic_visit(node)
 
 
-def check_command(command, base_dir):
+def check_command(command, base_dir, approved_paths=None):
     """
     Check if a compound command (with pipes, &&, etc.) is approved.
     Returns (decision, reason).
@@ -423,7 +445,11 @@ def check_command(command, base_dir):
     Args:
         command: The bash command string to validate
         base_dir: Base directory for path validation (typically cwd)
+        approved_paths: Optional list of additional approved path prefixes
     """
+    if approved_paths is None:
+        approved_paths = []
+
     if not BASHLEX_AVAILABLE:
         return "ask", "bashlex not available - cannot parse compound commands"
 
@@ -444,7 +470,7 @@ def check_command(command, base_dir):
         parts = bashlex.parse(command)
 
         # Create visitor and traverse the AST
-        visitor = BashASTVisitor(base_dir=base_dir)
+        visitor = BashASTVisitor(base_dir=base_dir, approved_paths=approved_paths)
         for part in parts:
             visitor.visit(part)
 
@@ -464,7 +490,8 @@ def check_command(command, base_dir):
             is_safe, violation = validate_text_for_dangerous_patterns(
                 cmd_ctx.full_command,
                 f"'{cmd_ctx.name}'",
-                base_dir
+                base_dir,
+                approved_paths
             )
             if not is_safe:
                 visitor.violations.append(violation)
@@ -520,7 +547,7 @@ def check_command(command, base_dir):
         return "ask", f"failed to parse compound command: {error_msg}"
 
 
-def validate_command(command, base_dir):
+def validate_command(command, base_dir, approved_paths=None):
     """
     Validate a bash command.
     Returns: None to defer, or calls send_permission_response() and returns True.
@@ -528,7 +555,10 @@ def validate_command(command, base_dir):
     Args:
         command: The bash command string to validate
         base_dir: Base directory for path validation (typically cwd)
+        approved_paths: Optional list of additional approved path prefixes
     """
+    if approved_paths is None:
+        approved_paths = []
     # Block null bytes (no legitimate use, could confuse parser)
     if '\x00' in command:
         send_permission_response("ask", "contains null byte", command)
@@ -539,7 +569,7 @@ def validate_command(command, base_dir):
         log_debug(f"WARNING: Command contains escape sequences (potential log obfuscation): {command}")
 
     # Semantic command validation
-    decision, reason = check_command(command, base_dir)
+    decision, reason = check_command(command, base_dir, approved_paths)
     send_permission_response(decision, reason, command)
     return True
 
@@ -567,7 +597,7 @@ def main():
         sys.exit(0)
 
     # Validate the command (pass cwd as base_dir for path validation)
-    result = validate_command(command, base_dir=cwd)
+    result = validate_command(command, base_dir=cwd, approved_paths=APPROVED_PATHS)
 
     # If result is None, defer (exit 0 with no output)
     if result is None:

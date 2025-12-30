@@ -546,6 +546,7 @@ def main():
         "echo hello",
         "touch newfile.txt",
         "rm temp.txt",
+        "mkdir /tmp/test", 
     ]
 
     # ===== Define Unsafe Atoms =====
@@ -561,7 +562,6 @@ def main():
     # File access violations - Absolute paths
     absolute_paths = [
         "ls /etc/passwd",
-        "mkdir /tmp/test",
         "cat /Users/atlas/file.txt",
         "rm /var/log/test.log",
     ]
@@ -861,6 +861,12 @@ def main():
     # Absolute path outside project - should ask
     abs_outside = os.path.join(testdata_dir, 'outside.txt')
     test_command_with_cwd(f'cat {abs_outside}', project_dir, 'ask', f"Absolute path outside project blocked: cat {abs_outside}")
+
+    # /tmp directory - should allow
+    test_command_with_cwd('ls /tmp/some-file.txt', project_dir, 'allow', "/tmp directory allowed: ls /tmp/some-file.txt")
+
+    # /dev/null - should allow
+    test_command_with_cwd('mkdir ./x/y/z > /dev/null', project_dir, 'allow', "/dev/null allowed: mkdir ./x/y/z > /dev/null")
 
     print_subheader("Parent directory references")
 

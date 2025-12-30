@@ -1,5 +1,5 @@
 {
-  "patterns": [
+  "commands": [
     "sleep:*",
 
     "ls:*",
@@ -40,5 +40,9 @@
     "git commit:*",
     "git tag:*",
     "git blame:*"
+  ],
+  "paths": [
+    "/tmp",
+    "/dev/null"
   ]
 }

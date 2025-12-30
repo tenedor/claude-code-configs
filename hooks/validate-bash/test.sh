@@ -105,7 +105,6 @@ test_command "echo \${ENV}" "ask"
 
 echo ""
 echo "--- Absolute paths ---"
-test_command "mkdir /tmp/test" "ask"
 test_command "ls /etc/passwd" "ask"
 test_command "cat /Users/atlas/file.txt" "ask"
 
@@ -176,6 +175,11 @@ test_command "cp src/file.txt dest/" "allow"
 test_command "mv old.txt new.txt" "allow"
 test_command "find . -name '*.js'" "allow"
 test_command "grep -r 'pattern' src/" "allow"
+
+echo ""
+echo "--- Approved absolute paths ---"
+test_command "mkdir /tmp/test" "allow"
+test_command "cat file1.txt > /dev/null" "allow"
 
 echo ""
 echo "--- Safe redirects ---"
